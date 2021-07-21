@@ -19,6 +19,7 @@ import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.media.ArraySchema;
 import io.swagger.v3.oas.models.media.ComposedSchema;
+import io.swagger.v3.oas.models.media.Content;
 import io.swagger.v3.oas.models.media.Discriminator;
 import io.swagger.v3.oas.models.media.MediaType;
 import io.swagger.v3.oas.models.media.ObjectSchema;
@@ -27,6 +28,7 @@ import io.swagger.v3.oas.models.media.StringSchema;
 import io.swagger.v3.oas.models.parameters.HeaderParameter;
 import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.parameters.RequestBody;
+import io.swagger.v3.oas.models.responses.ApiResponse;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.intellij.lang.annotations.Language;
@@ -64,6 +66,36 @@ class PostProcessHelper
 			Schema schema = ((ComposedSchema) mediaType.getSchema()).getOneOf().get(0);
 			mediaType.schema(schema);
 			dropSchemas("InfluxQLQuery");
+		}
+
+		//
+		// Use first response type for multiple response type by oneOf (Dashboard, DashboardWithViewProperties)
+		//
+		for (Map.Entry<String, PathItem> entry : openAPI.getPaths().entrySet())
+		{
+			for (Operation operation : entry.getValue().readOperations())
+			{
+				for (Map.Entry<String, ApiResponse> e : operation.getResponses().entrySet())
+				{
+					Content content = e.getValue().getContent();
+					if (content == null)
+					{
+						continue;
+					}
+					for (MediaType mediaType : content.values())
+					{
+						Schema schema = mediaType.getSchema();
+						if (schema instanceof ComposedSchema)
+						{
+							List<Schema> composedSchema = ((ComposedSchema) (schema)).getOneOf();
+							if (composedSchema != null && composedSchema.size() > 1)
+							{
+								mediaType.setSchema(composedSchema.get(0));
+							}
+						}
+					}
+				}
+			}
 		}
 
 		//
@@ -706,12 +738,17 @@ class PostProcessHelper
 
 			if (discriminatorModelBase != discriminatorModel)
 			{
-				discriminatorModelBase.setParentModel(discriminatorModel);
-				discriminatorModelBase.setParent(discriminatorModel.getName());
-				discriminatorModelBase.setParentSchema(discriminatorModel.getName());
-				setToParentVars(discriminatorModelBase, discriminatorModel.getParentVars());
+				CodegenModel discriminatorModelBaseParen = discriminatorModel;
+				if (!allModels.containsKey(name + "Discriminator"))
+				{
+					 discriminatorModelBaseParen = base;
+				}
+				discriminatorModelBase.setParentModel(discriminatorModelBaseParen);
+				discriminatorModelBase.setParent(discriminatorModelBaseParen.getName());
+				discriminatorModelBase.setParentSchema(discriminatorModelBaseParen.getName());
+				setToParentVars(discriminatorModelBase, discriminatorModelBaseParen.getParentVars());
 				setExtensionParentVars(discriminatorModelBase, base.getVars());
-				setReadWriteWars(discriminatorModelBase, discriminatorModel.getParentVars());
+				setReadWriteWars(discriminatorModelBase, discriminatorModelBaseParen.getParentVars());
 			}
 
 			// set correct name for discriminator
@@ -777,15 +814,13 @@ class PostProcessHelper
 
 			if (!generator.compileTimeInheritance())
 			{
-				// If there is no intermediate entity, than leave current parent schema
-				if (allModels.containsKey(name + "Discriminator"))
-				{
-					rootModel.setParentSchema(null);
-					rootModel.setParent(null);
-				}
+				rootModel.setParentSchema(null);
+				rootModel.setParent(null);
+				rootModel.setParentModel(null);
+				rootModel.getVendorExtensions().put("x-parent-vars", null);
 
 				boolean presentDiscriminatorVar = rootModel
-						.getRequiredVars()
+						.getVars()
 						.stream()
 						.anyMatch(codegenProperty -> codegenProperty.getBaseName().equals(discriminatorPropertyName));
 
@@ -814,7 +849,7 @@ class PostProcessHelper
 		}
 
 		// remove discriminator property from inherited Discriminator
-		if (discriminatorModel != base)
+		if (discriminatorModel != base && discriminatorModel != schema)
 		{
 			if (generator.compileTimeInheritance() && base.getDiscriminator() == null)
 			{
